@@ -1,0 +1,118 @@
+import sqlite3
+from aiogram import types
+from aiogram.dispatcher import FSMContext, State
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
+from aiogram import Bot, Dispatcher, executor
+from states import States, RegistrationState  # Сделаем импорт вместе с новым состоянием
+import crud_functions
+
+def initiate_db():
+    conn = sqlite3.connect('database.db')
+    cursor = conn.cursor()
+
+    # Создание таблицы Users, если не существует
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS Users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE,
+            email TEXT NOT NULL UNIQUE,
+            age INTEGER NOT NULL,
+            balance INTEGER NOT NULL DEFAULT 1000
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def add_user(username, email, age):
+    conn = sqlite3.connect('database.db')
+    cursor = conn.cursor()
+
+    cursor.execute('''
+        INSERT INTO Users (username, email, age, balance)
+        VALUES (?, ?, ?, ?)
+    ''', (username, email, age, 1000))
+
+    conn.commit()
+    conn.close()
+
+def is_included(username):
+    conn = sqlite3.connect('database.db')
+    cursor = conn.cursor()
+
+    cursor.execute('SELECT * FROM Users WHERE username = ?', (username,))
+    user = cursor.fetchone()
+    conn.close()
+
+    return user is not None
+
+# Создаем экземпляр бота и диспетчера
+bot = Bot(token='YOUR_BOT_TOKEN')
+storage = MemoryStorage()
+dp = Dispatcher(bot, storage=storage)
+
+# Инициализация базы данных
+crud_functions.initiate_db()
+
+# Определяем состояния
+class UserState(States):
+    age = State()
+    growth = State()
+    weight = State()
+
+# Определяем новое состояние
+class RegistrationState(States):
+    username = State()
+    email = State()
+    age = State()
+
+# Создаем клавиатуру
+inline_keyboard = types.InlineKeyboardMarkup(row_width=1)
+calculate_button = types.InlineKeyboardButton(text='Рассчитать норму калорий', callback_data='calories')
+formulas_button = types.InlineKeyboardButton(text='Формулы расчёта', callback_data='formulas')
+register_button = types.InlineKeyboardButton(text='Регистрация', callback_data='register')
+inline_keyboard.add(calculate_button, formulas_button, register_button)
+
+# Функция для отправки клавиатуры при старте
+@dp.message_handler(commands=['start'])
+async def start(message: types.Message):
+    await message.answer("Добро пожаловать! Выберите действие:", reply_markup=inline_keyboard)
+
+# Функция для регистрации пользователей
+@dp.callback_query_handler(lambda call: call.data == 'register')
+async def sing_up(call: types.CallbackQuery):
+    await call.message.answer("Введите имя пользователя (только латинский алфавит):")
+    await RegistrationState.username.set()
+
+# Установка username
+@dp.message_handler(state=RegistrationState.username)
+async def set_username(message: types.Message, state: FSMContext):
+    username = message.text.strip()
+    if not username.isalpha():
+        await message.answer("Имя пользователя должно содержать только латинские буквы. Попробуйте снова.")
+        return
+
+    if crud_functions.is_included(username):
+        await message.answer("Пользователь существует, введите другое имя")
+    else:
+        await state.update_data(username=username)
+        await message.answer("Введите свой email:")
+        await RegistrationState.email.set()
+
+# Установка email
+@dp.message_handler(state=RegistrationState.email)
+async def set_email(message: types.Message, state: FSMContext):
+    email = message.text.strip()
+    await state.update_data(email=email)
+    await message.answer("Введите свой возраст:")
+    await RegistrationState.age.set()
+
+# Установка возраста
+@dp.message_handler(state=RegistrationState.age)
+async def set_age(message: types.Message, state: FSMContext):
+    age = message.text.strip()
+    await state.update_data(age=age)
+
+    user_data = await state.get_data()
+    crud_functions.add_user(user_data['username'], user_data['email'], user_data['age'])
+    await message.answer("Вы зарегистрированы! Ваш баланс составляет 1000.")
+    await state.finish()
